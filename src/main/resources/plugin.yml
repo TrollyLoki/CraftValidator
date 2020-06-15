@@ -1,0 +1,7 @@
+name: CraftValidator
+version: ${project.version}
+description: Plugin for automatically validating crafts against stylistic and other requirements.
+author: TrollyLoki
+main: net.trollyloki.craftvalidator.CraftValidator
+
+depend: [Movecraft]
