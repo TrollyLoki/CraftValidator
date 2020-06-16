@@ -10,6 +10,7 @@ public class CraftValidator extends JavaPlugin {
     public void onEnable() {
 
         instance = this;
+        saveDefaultConfig();
 
         getServer().getPluginManager().registerEvents(new DetectionListener(), this);
 
