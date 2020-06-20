@@ -15,6 +15,7 @@ import org.bukkit.block.Sign;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.material.Stairs;
 import org.bukkit.util.Vector;
 
 import net.countercraft.movecraft.MovecraftLocation;
@@ -36,16 +37,15 @@ public class DetectionListener implements Listener {
     }
 
     @SuppressWarnings("deprecation")
-    public String validateCraft(Craft craft) {
+    public static String validateCraft(Craft craft) {
 
-        BlockFace cruiseFace = null;
         List<Integer> engineBlockIds = getMoveBlocks(craft.getType());
-        Set<Location> engineBlocks = new HashSet<Location>();
+        BlockFace cruiseFace = null;
+        Set<MovecraftLocation> engineBlocks = new HashSet<MovecraftLocation>();
 
-        for (MovecraftLocation ml : craft.getHitBox()) {
+        for (MovecraftLocation location : craft.getHitBox()) {
 
-            Location location = ml.toBukkit(craft.getW());
-            Block block = location.getBlock();
+            Block block = location.toBukkit(craft.getW()).getBlock();
             BlockState state = block.getState();
             if (state instanceof Sign) {
                 Sign sign = (Sign) state;
@@ -67,67 +67,174 @@ public class DetectionListener implements Listener {
 
         if (cruiseFace == null)
             return "noCruiseSign";
-
         Vector vector = new Vector(cruiseFace.getModX(), 0, cruiseFace.getModZ());
-        craft.getNotificationPlayer().sendMessage(cruiseFace.getModX() + ", " + cruiseFace.getModZ());
+        if (!validateCruiseDirection(craft, vector))
+            return "invalidCruiseDirection";
 
-        Function<Location, Boolean> inHitbox = null;
-        if (vector.getBlockX() > 0)
-            inHitbox = (l) -> {
-                return l.getBlockX() <= craft.getHitBox().getMaxX();
-            };
-        else if (vector.getBlockX() < 0)
-            inHitbox = (l) -> {
-                return l.getBlockX() >= craft.getHitBox().getMinX();
-            };
-        else if (vector.getBlockZ() > 0)
-            inHitbox = (l) -> {
-                return l.getBlockZ() <= craft.getHitBox().getMaxZ();
-            };
-        else if (vector.getBlockZ() < 0)
-            inHitbox = (l) -> {
-                return l.getBlockZ() >= craft.getHitBox().getMinZ();
-            };
-
-        Set<Location> checkedEngineBlocks = new HashSet<Location>();
-        for (Location l : engineBlocks) {
-            if (checkedEngineBlocks.contains(l))
-                continue;
-
-            Location location = l.clone().add(vector);
-            while (inHitbox.apply(location)) {
-
-                Block block = location.getBlock();
-                if (engineBlockIds.contains(block.getTypeId()))
-                    checkedEngineBlocks.add(location);
-                else if (!(block.getType() == Material.AIR || isVenting(block.getTypeId())))
-                    return "engineBlocked";
-                location.add(vector);
-
-            }
-        }
+        int invalidEngines = validateEngines(craft, engineBlocks, vector);
+        if (invalidEngines > 0)
+            return "engineBlocked - " + invalidEngines + " more than allowed blocked";
 
         return "valid";
 
     }
 
-    public List<Integer> getMoveBlocks(CraftType type) {
+    public static boolean validateCruiseDirection(Craft craft, Vector vector) {
+
+        if (vector.getBlockX() != 0) {
+            return craft.getHitBox().getXLength() > craft.getHitBox().getZLength();
+        }
+
+        else if (vector.getBlockZ() != 0) {
+            return craft.getHitBox().getZLength() > craft.getHitBox().getXLength();
+        }
+
+        return false;
+
+    }
+
+    public static int validateEngines(Craft craft, Set<MovecraftLocation> engineBlocks, Vector vector) {
+
+        Function<MovecraftLocation, Boolean> inHitbox = null;
+        if (vector.getBlockX() > 0)
+            inHitbox = (l) -> {
+                return l.getX() <= craft.getHitBox().getMaxX();
+            };
+        else if (vector.getBlockX() < 0)
+            inHitbox = (l) -> {
+                return l.getX() >= craft.getHitBox().getMinX();
+            };
+        else if (vector.getBlockZ() > 0)
+            inHitbox = (l) -> {
+                return l.getZ() <= craft.getHitBox().getMaxZ();
+            };
+        else if (vector.getBlockZ() < 0)
+            inHitbox = (l) -> {
+                return l.getZ() >= craft.getHitBox().getMinZ();
+            };
+
+        int maxInvalidEngineBlocks = (int) (craft.getHitBox().size()
+                * CraftValidator.getInstance().getConfig().getDouble("maxInvalidEnginesPercent") * 0.01);
+        int invalidEngineBlocks = 0;
+        for (MovecraftLocation location : engineBlocks) {
+            if (engineBlocks.contains(location.translate(-vector.getBlockX(), 0, -vector.getBlockZ())))
+                continue;
+
+            boolean ventingFound = false;
+            int engineBlocksCount = 1;
+            location = location.translate(vector.getBlockX(), 0, vector.getBlockZ());
+            while (inHitbox.apply(location)) {
+
+                Block block = location.toBukkit(craft.getW()).getBlock();
+                if (!ventingFound && engineBlocks.contains(location)) {
+                    engineBlocksCount++;
+                }
+
+                else if (block.getType() == Material.AIR || (!ventingFound && isVentingBlock(block, vector)))
+                    ventingFound = true;
+
+                else {
+                    invalidEngineBlocks += engineBlocksCount;
+                    // if (invalidEngineBlocks > maxInvalidEngineBlocks) // end
+                    break;
+                }
+
+                location = location.translate(vector.getBlockX(), 0, vector.getBlockZ());
+
+            }
+        }
+
+        return invalidEngineBlocks - maxInvalidEngineBlocks;
+
+    }
+
+    public static List<Integer> getMoveBlocks(CraftType type) {
         List<Integer> typeIds = new ArrayList<Integer>();
         for (List<Integer> list : type.getMoveBlocks().keySet())
             typeIds.addAll(list);
         return typeIds;
     }
 
-    public boolean isVenting(int typeId) {
+    public static boolean isVentingTypeId(int typeId) {
         return CraftValidator.getInstance().getConfig().getIntegerList("ventingBlocks").contains(typeId);
     }
 
-    public boolean isMoveBlock(CraftType type, int typeId) {
+    @SuppressWarnings("deprecation")
+    public static boolean isVentingBlock(Block block, Vector vector) {
+        if (isVentingTypeId(block.getTypeId())) {
+            if (block.getState().getData() instanceof Stairs) {
+                if (!isVentingStair(block, vector))
+                    return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    @SuppressWarnings("deprecation")
+    public static boolean isVentingStair(Block block, Vector vector) {
+        Block testBlock = null;
+        byte[] testData = null;
+
+        if (vector.getBlockX() != 0) {
+
+            if (block.getData() == 2) {
+                testBlock = block.getRelative(0, 0, -1);
+                testData = new byte[] { 0, 1 };
+            } else if (block.getData() == 3) {
+                testBlock = block.getRelative(0, 0, 1);
+                testData = new byte[] { 0, 1 };
+            } else if (block.getData() == 6) {
+                testBlock = block.getRelative(0, 0, -1);
+                testData = new byte[] { 4, 5 };
+            } else if (block.getData() == 7) {
+                testBlock = block.getRelative(0, 0, 1);
+                testData = new byte[] { 4, 5 };
+            }
+
+        }
+
+        else if (vector.getBlockZ() != 0) {
+
+            if (block.getData() == 0) {
+                testBlock = block.getRelative(-1, 0, 0);
+                testData = new byte[] { 2, 3 };
+            } else if (block.getData() == 1) {
+                testBlock = block.getRelative(1, 0, 0);
+                testData = new byte[] { 2, 3 };
+            } else if (block.getData() == 4) {
+                testBlock = block.getRelative(-1, 0, 0);
+                testData = new byte[] { 6, 7 };
+            } else if (block.getData() == 5) {
+                testBlock = block.getRelative(1, 0, 0);
+                testData = new byte[] { 6, 7 };
+            }
+
+        }
+
+        if (testBlock != null) {
+            if (!(testBlock.getState().getData() instanceof Stairs))
+                return true;
+            for (byte test : testData) {
+                if (testBlock.getData() == test)
+                    return false;
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    public static boolean isMoveBlock(CraftType type, int typeId) {
         for (List<Integer> list : type.getMoveBlocks().keySet()) {
             if (list.contains(typeId))
                 return true;
         }
         return false;
+    }
+
+    public static MovecraftLocation mLocFromBukkit(Location location) {
+        return new MovecraftLocation(location.getBlockX(), location.getBlockY(), location.getBlockZ());
     }
 
 }
